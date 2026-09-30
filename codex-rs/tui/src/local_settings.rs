@@ -76,6 +76,7 @@ impl LocalSettings {
             ),
             tui: Tui {
                 notification_settings: config.tui_notifications.clone(),
+                model_picker_filter: config.tui_model_picker_filter.clone(),
                 animations: animations && system_motion == crate::motion::MotionMode::Animated,
                 screen_reader_detection_done: None,
                 effects: config.tui_effects,

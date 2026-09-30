@@ -4626,6 +4626,10 @@
           "default": {},
           "description": "Startup tooltip availability NUX state persisted by the TUI."
         },
+        "model_picker_filter": {
+          "description": "Regex matching model IDs to show in the model picker.",
+          "type": "string"
+        },
         "notification_condition": {
           "allOf": [
             {

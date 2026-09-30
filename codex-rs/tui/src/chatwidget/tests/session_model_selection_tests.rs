@@ -1,6 +1,149 @@
 //! Exercise session-only model selection through picker key events.
 
 use super::*;
+use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn model_picker_includes_profile_models_after_catalog_refresh() {
+    let (mut chat, mut events, _ops) = make_chatwidget_manual(Some("gpt-5.5")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config
+        .model_providers
+        .insert("openrouter".into(), chat.config.model_provider.clone());
+    let temp = tempdir().expect("tempdir");
+    chat.config.config_layer_stack = ConfigLayerStack::default()
+        .with_user_config(
+            &temp.path().join("config.toml").abs(),
+            toml::from_str::<TomlValue>(
+                r#"
+[profiles.glm53]
+model = "z-ai/glm-5.3"
+model_provider = "openrouter"
+[profiles.glm_duplicate]
+model = "z-ai/glm-5.3"
+[profiles.unavailable]
+model = "missing-model"
+model_provider = "missing"
+"#,
+            )
+            .expect("profile config"),
+        )
+        .expect("valid config");
+    chat.open_model_popup();
+    let request_id = chat.model_popup_request_id.expect("model fetch");
+    let preset = get_available_model(&chat, "gpt-5.5");
+    assert!(chat.on_models_loaded(request_id, Ok(vec![preset])));
+    chat.refresh_open_model_picker();
+    assert_eq!(chat.model_popup_model_ids, vec!["gpt-5.5", "z-ai/glm-5.3"]);
+    assert_chatwidget_snapshot!(
+        "model_picker_profile_models",
+        render_bottom_popup(&chat, /*width*/ 90)
+    );
+    while events.try_recv().is_ok() {}
+    chat.handle_key_event(KeyCode::Down.into());
+    chat.handle_key_event(KeyCode::Char('s').into());
+    assert_matches!(events.try_recv(), Ok(AppEvent::SelectSessionModel { model, effort })
+        if model == "z-ai/glm-5.3" && effort == Some(ReasoningEffortConfig::None));
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn model_picker_filter_applies_to_catalog_and_profile_models() {
+    let (mut chat, _events, _ops) = make_chatwidget_manual(Some("gpt-5.5")).await;
+    chat.config.tui_model_picker_filter = Some("^(gpt-5\\.5|z-ai/glm-5\\.3)$".into());
+    chat.config
+        .model_providers
+        .insert("openrouter".into(), chat.config.model_provider.clone());
+    let temp = tempdir().expect("tempdir");
+    chat.config.config_layer_stack = ConfigLayerStack::default()
+        .with_user_config(
+            &temp.path().join("config.toml").abs(),
+            toml::from_str::<TomlValue>(
+                r#"
+[profiles.glm53]
+model = "z-ai/glm-5.3"
+model_provider = "openrouter"
+[profiles.other]
+model = "other-model"
+model_provider = "openrouter"
+"#,
+            )
+            .expect("profile config"),
+        )
+        .expect("valid config");
+    let mut hidden = get_available_model(&chat, "gpt-5.5");
+    hidden.id = "hidden-model".into();
+    hidden.model = "hidden-model".into();
+    hidden.display_name = "Hidden model".into();
+    let catalog = vec![get_available_model(&chat, "gpt-5.5"), hidden];
+    chat.open_model_popup_with_presets(catalog.clone());
+    assert_eq!(chat.model_popup_model_ids, vec!["gpt-5.5", "z-ai/glm-5.3"]);
+    assert_chatwidget_snapshot!(
+        "model_picker_filtered_models",
+        render_bottom_popup(&chat, /*width*/ 90)
+    );
+
+    Arc::make_mut(&mut chat.model_catalog).models = catalog;
+    chat.open_all_models_popup();
+    assert_eq!(chat.model_popup_model_ids, vec!["gpt-5.5", "z-ai/glm-5.3"]);
+}
+
+#[tokio::test]
+async fn profile_model_picker_preserves_explicit_provider_and_effort() {
+    let (mut chat, _events, _ops) = make_chatwidget_manual(Some("gpt-5.5")).await;
+    chat.config
+        .model_providers
+        .insert("openrouter".into(), chat.config.model_provider.clone());
+    let temp = tempdir().expect("tempdir");
+    chat.config.config_layer_stack = ConfigLayerStack::default()
+        .with_user_config(
+            &temp.path().join("config.toml").abs(),
+            toml::from_str::<TomlValue>(
+                r#"
+[profiles.router]
+model = "gpt-5.5"
+model_provider = "openrouter"
+model_reasoning_effort = "high"
+"#,
+            )
+            .expect("profile config"),
+        )
+        .expect("valid config");
+    let models = chat.with_profile_models(Vec::new());
+    assert_eq!(models.len(), 1);
+    assert_eq!(
+        (
+            models[0].model.as_str(),
+            &models[0].default_reasoning_effort
+        ),
+        ("openrouter::gpt-5.5", &ReasoningEffortConfig::High)
+    );
+}
+
+#[tokio::test]
+async fn inline_model_command_selects_a_provider_model_without_saving() {
+    let (mut chat, mut events, _ops) = make_chatwidget_manual(Some("gpt-5.5")).await;
+    chat.config
+        .model_providers
+        .insert("openrouter".into(), chat.config.model_provider.clone());
+    for selector in ["z-ai/glm-5.3", "openrouter::z-ai/glm-5.3", "gpt-5.5"] {
+        while events.try_recv().is_ok() {}
+        chat.bottom_pane
+            .set_composer_text(format!("/model {selector}"), Vec::new(), Vec::new());
+        chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let selection = std::iter::from_fn(|| events.try_recv().ok())
+            .find(|event| matches!(event, AppEvent::SelectSessionModel { .. }));
+        assert_matches!(selection, Some(AppEvent::SelectSessionModel { model, effort: None }) if model == selector);
+    }
+    while events.try_recv().is_ok() {}
+    chat.dispatch_command_with_args(SlashCommand::Model, "missing::model".into(), Vec::new());
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .all(|event| !matches!(event, AppEvent::SelectSessionModel { .. }))
+    );
+}
 
 #[tokio::test]
 async fn session_model_selection_accepts_final_choices_without_saving() {

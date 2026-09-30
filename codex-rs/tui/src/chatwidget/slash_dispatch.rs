@@ -763,6 +763,25 @@ impl ChatWidget {
         } = prepared;
         let trimmed = args.trim();
         match cmd {
+            SlashCommand::Model if trimmed.is_empty() => self.dispatch_command(cmd),
+            SlashCommand::Model => {
+                if trimmed.split_whitespace().count() != 1 {
+                    self.add_error_message("Usage: /model [provider::model | model]".to_string());
+                    return;
+                }
+                match codex_model_provider_info::resolve_model_provider(
+                    trimmed,
+                    &self.config.model_provider_id,
+                    self.config.config_layer_stack.required_model_provider(),
+                    &self.config.model_providers,
+                ) {
+                    Ok(_) => self.app_event_tx.send(AppEvent::SelectSessionModel {
+                        model: trimmed.to_string(),
+                        effort: None,
+                    }),
+                    Err(error) => self.add_error_message(error),
+                }
+            }
             SlashCommand::Export if trimmed.is_empty() => self.show_transcript_export_popup(),
             SlashCommand::Export => {
                 self.set_queue_autosend_suppressed(/*suppressed*/ true);

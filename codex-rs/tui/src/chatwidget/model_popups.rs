@@ -84,7 +84,8 @@ impl ChatWidget {
             self.open_luna_reserve_model_popup(presets, MODEL_SELECTION_VIEW_ID);
             return;
         }
-        let presets: Vec<ModelPreset> = presets
+        let presets: Vec<ModelPreset> = self
+            .with_profile_models(presets)
             .into_iter()
             .filter(|preset| preset.show_in_picker)
             .collect();
@@ -220,9 +221,7 @@ impl ChatWidget {
             return;
         }
         let presets = self
-            .model_catalog
-            .try_list_models()
-            .unwrap_or_default()
+            .with_profile_models(self.model_catalog.try_list_models().unwrap_or_default())
             .into_iter()
             .filter(|preset| preset.show_in_picker && !Self::is_auto_model(&preset.model))
             .collect();

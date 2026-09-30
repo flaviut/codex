@@ -650,6 +650,9 @@ pub struct Config {
     /// Info needed to make an API request to the model.
     pub model_provider: ModelProviderInfo,
 
+    /// Regex matching model IDs shown in the TUI model picker.
+    pub tui_model_picker_filter: Option<String>,
+
     /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
 
@@ -3250,6 +3253,14 @@ impl Config {
 
         validate_model_providers(&cfg.model_providers)
             .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        if let Some(pattern) = cfg.tui.as_ref().and_then(|tui| tui.model_picker_filter.as_ref()) {
+            regex_lite::Regex::new(pattern).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid tui.model_picker_filter regex: {error}"),
+                )
+            })?;
+        }
         if cfg.model_post_turn_compact_threshold_percent.is_some_and(|percent| percent > 100) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -3819,10 +3830,33 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
-        let model_provider_id = config_layer_stack.required_model_provider().map(str::to_string)
+        let explicit_provider = config_layer_stack.required_model_provider().map(str::to_string)
             .or(model_provider)
-            .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
+            .or_else(|| {
+                config_layer_stack.layers_high_to_low()
+                    .find(|layer| matches!(layer.name, ConfigLayerSource::SessionFlags))
+                    .and_then(|layer| layer.config.get("model_provider"))
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| {
+                (model.is_none() && cfg.model.as_deref().is_none_or(|model| !model.contains("::")))
+                    .then(|| cfg.model_provider.clone()).flatten()
+            });
+        let default_provider = cfg.model_provider.as_deref().unwrap_or("openai");
+        let model = model.or(cfg.model);
+        let (model_provider_id, model) = match model {
+            Some(model) => {
+                let (provider, model) = codex_model_provider_info::resolve_model_provider(
+                    &model,
+                    default_provider,
+                    explicit_provider.as_deref(),
+                    &model_providers,
+                ).map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+                (provider, Some(model))
+            }
+            None => (explicit_provider.unwrap_or_else(|| default_provider.to_string()), None),
+        };
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
@@ -3966,7 +4000,6 @@ impl Config {
 
         let forced_login_method = cfg.forced_login_method;
 
-        let model = model.or(cfg.model);
         let notices = cfg.notice.unwrap_or_default();
         let service_tier = match service_tier_override {
             Some(Some(service_tier)) => Some(service_tier),
@@ -4293,6 +4326,10 @@ impl Config {
                 .unwrap_or_default(),
             model_provider_id,
             model_provider,
+            tui_model_picker_filter: cfg
+                .tui
+                .as_ref()
+                .and_then(|tui| tui.model_picker_filter.clone()),
             cwd: resolved_cwd,
             workspace_roots: workspace_roots.clone(),
             workspace_roots_explicit,

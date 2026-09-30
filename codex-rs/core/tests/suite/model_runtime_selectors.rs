@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_core::CodexThreadSettingsOverrides;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_features::Feature;
@@ -39,6 +40,126 @@ const ROOT_MODEL: &str = "test-multi-agent-root";
 const ROOT_PROMPT: &str = "spawn a child";
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 const UNSUPPORTED_CODE_MODE_WARNING: &str = "does not advertise Code Mode support";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn switches_providers_in_one_thread_preserving_history_and_auth() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let openai = responses::start_mock_server().await;
+    let openrouter = responses::start_mock_server().await;
+    let first = mount_sse_sequence(
+        &openai,
+        vec![
+            sse(vec![
+                ev_response_created("first"),
+                ev_assistant_message("msg-1", "first answer"),
+                ev_completed("first"),
+            ]),
+            sse(vec![
+                ev_response_created("third"),
+                ev_assistant_message("msg-3", "third answer"),
+                ev_completed("third"),
+            ]),
+        ],
+    )
+    .await;
+    let second = mount_sse_once(
+        &openrouter,
+        sse(vec![
+            ev_response_created("second"),
+            ev_assistant_message("msg-2", "second answer"),
+            ev_completed("second"),
+        ]),
+    )
+    .await;
+    let router_url = format!("{}/v1", openrouter.uri());
+    let mut builder = test_codex().with_config(move |config| {
+        config.model = Some("gpt-5.5".into());
+        config.model_provider.supports_websockets = false;
+        config.model_provider.experimental_bearer_token = Some("openai-token".into());
+        config
+            .model_providers
+            .insert("openai".into(), config.model_provider.clone());
+        let mut router = config.model_provider.clone();
+        router.name = "OpenRouter".into();
+        router.base_url = Some(router_url);
+        router.requires_openai_auth = false;
+        router.experimental_bearer_token = Some("router-token".into());
+        config.model_providers.insert("openrouter".into(), router);
+    });
+    let test = builder.build(&openai).await?;
+    test.submit_text_turn("first question").await?;
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            model: Some("z-ai/glm-5.3".into()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(
+        test.codex.config_snapshot().await.model_provider_id,
+        "openrouter"
+    );
+    test.submit_text_turn("second question").await?;
+    let request = second.single_request();
+    assert_eq!(request.body_json()["model"], "z-ai/glm-5.3");
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer router-token".into())
+    );
+    assert!(request.body_contains_text("first question"));
+    assert!(request.body_contains_text("first answer"));
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            model: Some("gpt-5.5".into()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(
+        test.codex.config_snapshot().await.model_provider_id,
+        "openai"
+    );
+    test.submit_text_turn("third question").await?;
+    let requests = first.requests();
+    assert_eq!(requests.len(), 2);
+    let request = &requests[1];
+    assert_eq!(request.body_json()["model"], "gpt-5.5");
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer openai-token".into())
+    );
+    assert!(request.body_contains_text("second question"));
+    assert!(request.body_contains_text("second answer"));
+    assert!(
+        test.codex
+            .preview_thread_settings_overrides(CodexThreadSettingsOverrides {
+                model: Some("missing::model".into()),
+                ..Default::default()
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        test.codex.config_snapshot().await.model_provider_id,
+        "openai"
+    );
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            model: Some("openrouter::gpt-5.5".into()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let snapshot = test.codex.config_snapshot().await;
+    assert_eq!(
+        (snapshot.model_provider_id, snapshot.model),
+        ("openrouter".into(), "gpt-5.5".into())
+    );
+    Ok(())
+}
 
 struct RemoteModelResponse {
     body: Value,

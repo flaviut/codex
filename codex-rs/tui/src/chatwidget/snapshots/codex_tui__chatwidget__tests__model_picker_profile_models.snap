@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/session_model_selection_tests.rs
+expression: "render_bottom_popup(&chat, 90)"
+---
+  Select Model and Effort
+
+
+› 1. GPT-5.5 (current)  Legacy coding model.
+  2. z-ai/glm-5.3      openrouter · profile glm53
+
+  enter select · esc back

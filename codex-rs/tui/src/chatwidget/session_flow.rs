@@ -106,6 +106,9 @@ impl ChatWidget {
         self.current_cwd = Some(session.cwd.to_path_buf());
         self.config.cwd = session.cwd.clone();
         self.config.model_provider_id = session.model_provider_id.clone();
+        if let Some(provider) = self.config.model_providers.get(&session.model_provider_id) {
+            self.config.model_provider = provider.clone();
+        }
         if connector_scope_changed {
             self.invalidate_connector_scope();
         }

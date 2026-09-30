@@ -32,6 +32,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+mod provider_selection;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
@@ -218,6 +219,7 @@ struct ModelClientState {
     disable_websockets: AtomicBool,
     agent_identity_session_fallback: AgentIdentitySessionFallback,
     cached_websocket_session: StdMutex<WebsocketSession>,
+    models_manager: OnceLock<codex_models_manager::manager::SharedModelsManager>,
 }
 
 enum ClientRouting {
@@ -264,6 +266,7 @@ impl RequestRouteTelemetry {
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     state: Arc<ModelClientState>,
+    provider_states: Arc<StdMutex<Vec<Arc<ModelClientState>>>>,
     agent_identity_policy: AgentIdentityAuthPolicy,
     prompt_cache_key_override: Option<String>,
     codex_responses_headers: Option<Arc<CodexResponsesHeaders>>,
@@ -470,6 +473,10 @@ fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap 
 }
 
 impl ModelClient {
+    pub(crate) fn provider_info(&self) -> &ModelProviderInfo {
+        self.state.provider.info()
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Creates a new session-scoped `ModelClient`.
     ///
@@ -534,7 +541,9 @@ impl ModelClient {
                 disable_websockets: AtomicBool::new(false),
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                models_manager: OnceLock::new(),
             }),
+            provider_states: Arc::new(StdMutex::new(Vec::new())),
             agent_identity_policy,
             prompt_cache_key_override: None,
             codex_responses_headers: None,
@@ -1347,6 +1356,9 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    pub(crate) fn provider_info(&self) -> &ModelProviderInfo {
+        self.client.provider_info()
+    }
     #[allow(clippy::too_many_arguments)]
     /// Builds shared Responses API transport options and request-body options.
     ///

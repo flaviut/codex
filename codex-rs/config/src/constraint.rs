@@ -6,6 +6,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConstraintError {
+    #[error("{reason}")]
+    ModelProviderSelection { reason: String },
     #[error(
         "invalid value for `{field_name}`: `{candidate}` is not in the allowed set {allowed} (set by {requirement_source})"
     )]

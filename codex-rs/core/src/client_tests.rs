@@ -106,6 +106,31 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
     test_model_client_with_thread_id(ThreadId::new(), session_source)
 }
 
+#[test]
+fn provider_switching_isolates_and_reuses_transport_state() {
+    let client = test_model_client(SessionSource::Cli);
+    let mut info = client.provider_info().clone();
+    info.name = "Other provider".into();
+    info.base_url = Some("https://other.example/v1".into());
+    let provider = codex_model_provider::create_model_provider(info, /*auth_manager*/ None);
+    let other = client.for_provider(provider.clone());
+    other
+        .state
+        .disable_websockets
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        !client
+            .state
+            .disable_websockets
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+    assert!(Arc::ptr_eq(
+        &other.state,
+        &client.for_provider(provider).state
+    ));
+    assert_eq!(other.state.thread_id, client.state.thread_id);
+}
+
 fn test_model_client_with_thread_id(
     thread_id: ThreadId,
     session_source: SessionSource,

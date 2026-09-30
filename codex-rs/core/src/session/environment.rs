@@ -169,7 +169,8 @@ impl Session {
             ensure_configs_stay_owner_provided(current_environments, &environments.environments)?;
         }
 
-        current.apply(updates, current_environments)
+        let (current, updates) = self.resolve_provider_update(current, updates)?;
+        current.apply(&updates, current_environments)
     }
 
     /// Activates the environments accepted for a new task. Configuration may have arrived for

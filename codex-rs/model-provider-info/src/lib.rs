@@ -32,8 +32,10 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 mod gateway_oauth;
+mod model_selection;
 pub use gateway_oauth::GatewayOAuthConfig;
 pub use gateway_oauth::GatewayOAuthDelivery;
+pub use model_selection::resolve_model_provider;
 
 pub const RESIDENCY_HEADER_NAME: &str = "x-openai-internal-codex-residency";
 

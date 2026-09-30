@@ -1011,6 +1011,91 @@ command = "print-token"
     );
 }
 
+#[tokio::test]
+async fn model_selectors_infer_providers_and_respect_explicit_overrides() -> std::io::Result<()> {
+    let home = tempdir()?;
+    let config_toml = r#"
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+"#;
+    for (selector, explicit_provider, expected_provider, expected_model) in [
+        ("z-ai/glm-5.3", None, "openrouter", "z-ai/glm-5.3"),
+        (
+            "openrouter::z-ai/glm-5.3",
+            None,
+            "openrouter",
+            "z-ai/glm-5.3",
+        ),
+        ("z-ai/glm-5.3", Some("openai"), "openai", "z-ai/glm-5.3"),
+        ("gpt-5.5", None, "openai", "gpt-5.5"),
+    ] {
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(config_toml).unwrap(),
+            ConfigOverrides {
+                model: Some(selector.into()),
+                model_provider: explicit_provider.map(str::to_string),
+                ..Default::default()
+            },
+            home.abs(),
+        )
+        .await?;
+        assert_eq!(
+            (config.model_provider_id, config.model),
+            (
+                expected_provider.to_string(),
+                Some(expected_model.to_string())
+            )
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_inference_preserves_configured_defaults_and_cli_provider_flags()
+-> std::io::Result<()> {
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"
+model = "gpt-5.5"
+model_provider = "openrouter"
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+    )?;
+    for (model, provider, expected) in [
+        (None, None, "openrouter"),
+        (Some("z-ai/glm-5.3"), None, "openrouter"),
+        (Some("z-ai/glm-5.3"), Some("openai"), "openai"),
+        (Some("gpt-5.5"), Some("openrouter"), "openrouter"),
+    ] {
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+            .cli_overrides(
+                provider
+                    .map(|provider| {
+                        (
+                            "model_provider".into(),
+                            toml::Value::String(provider.into()),
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
+            )
+            .harness_overrides(ConfigOverrides {
+                model: model.map(str::to_string),
+                ..Default::default()
+            })
+            .build()
+            .await?;
+        assert_eq!(config.model_provider_id, expected);
+    }
+    Ok(())
+}
+
 #[test]
 fn rejects_provider_aws_for_custom_provider() {
     let err = toml::from_str::<ConfigToml>(
@@ -1257,6 +1342,7 @@ fn config_toml_deserializes_model_availability_nux() {
         cfg.tui.expect("tui config should deserialize"),
         Tui {
             notification_settings: TuiNotificationSettings::default(),
+            model_picker_filter: None,
             animations: true,
             screen_reader_detection_done: None,
             effects: Default::default(),
@@ -4398,6 +4484,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
         tui,
         Tui {
             notification_settings: TuiNotificationSettings::default(),
+            model_picker_filter: None,
             animations: true,
             screen_reader_detection_done: None,
             effects: Default::default(),
@@ -4426,6 +4513,31 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             terminal_resize_reflow_max_rows: None,
         }
     );
+}
+
+#[tokio::test]
+async fn load_config_rejects_invalid_model_picker_filter() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let error = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            tui: Some(Tui {
+                model_picker_filter: Some("[".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("invalid picker regex must be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        error
+            .to_string()
+            .contains("invalid tui.model_picker_filter regex")
+    );
+    Ok(())
 }
 
 #[tokio::test]

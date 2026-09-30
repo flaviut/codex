@@ -1171,10 +1171,19 @@ impl Session {
             .map(TurnEnvironment::permission_profile)
             .cloned()
             .unwrap_or_else(|| session_configuration.permission_profile());
+        let models_manager = self.models_manager_for_configuration(&session_configuration);
+        if session_configuration.provider.info() != self.services.model_client.provider_info() {
+            models_manager
+                .list_models(
+                    codex_models_manager::manager::RefreshStrategy::OnlineIfUncached,
+                    per_turn_config.http_client_factory(),
+                )
+                .await;
+        }
         let model_info = session_configuration
             .step_settings
             .resolve_model_info(
-                self.services.models_manager.as_ref(),
+                models_manager.as_ref(),
                 &session_configuration.model_info_overrides,
             )
             .await;
@@ -1247,7 +1256,7 @@ impl Session {
             self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
             step_settings,
-            &self.services.models_manager,
+            &models_manager,
             self.services
                 .network_proxy
                 .load_full()
